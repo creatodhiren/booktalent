@@ -48,10 +48,20 @@ def artist():
     return {"token": t, "user": u}
 
 
+def _verify_email(email: str):
+    """Helper: perform mock email-OTP send + verify so register can proceed."""
+    rs = requests.post(f"{API}/auth/email/send", json={"email": email, "name": "Test"}, timeout=15)
+    assert rs.status_code == 200, f"email/send failed: {rs.status_code} {rs.text}"
+    otp = rs.json().get("test_otp") or "123456"
+    rv = requests.post(f"{API}/auth/email/verify", json={"email": email, "otp": otp}, timeout=15)
+    assert rv.status_code == 200, f"email/verify failed: {rv.status_code} {rv.text}"
+
+
 @pytest.fixture(scope="session")
 def customer():
     # Register a fresh TEST customer to avoid existing data interference
     email = f"TEST_cust_{uuid.uuid4().hex[:8]}@booktalent.com"
+    _verify_email(email)
     payload = {
         "email": email,
         "password": "Test@1234",
@@ -105,6 +115,81 @@ class TestAuth:
             "last_name": "x", "phone": "+91" + str(int(time.time()))[-10:], "role": "customer",
         }, timeout=15)
         assert r.status_code == 400
+
+
+# ---------- EMAIL OTP (iter 3) ----------
+class TestEmailOTP:
+    def test_auth_config_email_disabled(self):
+        r = requests.get(f"{API}/auth/config", timeout=15)
+        assert r.status_code == 200
+        d = r.json()
+        # RESEND_API_KEY is empty in .env → provider disabled
+        assert "email_provider_enabled" in d
+        assert d["email_provider_enabled"] is False
+
+    def test_email_send_mock_returns_test_otp(self):
+        email = f"TEST_email_{uuid.uuid4().hex[:8]}@booktalent.com"
+        r = requests.post(f"{API}/auth/email/send", json={"email": email, "name": "Tester"}, timeout=15)
+        assert r.status_code == 200, r.text
+        d = r.json()
+        assert d.get("sent") is True
+        assert d.get("mock") is True
+        assert d.get("test_otp") == "123456"
+
+    def test_email_send_cooldown_429(self):
+        email = f"TEST_cool_{uuid.uuid4().hex[:8]}@booktalent.com"
+        r1 = requests.post(f"{API}/auth/email/send", json={"email": email}, timeout=15)
+        assert r1.status_code == 200
+        # Immediate second request should be cooldown-limited
+        r2 = requests.post(f"{API}/auth/email/send", json={"email": email}, timeout=15)
+        assert r2.status_code == 429, f"expected 429 got {r2.status_code} {r2.text}"
+
+    def test_email_verify_wrong_code_returns_400(self):
+        email = f"TEST_wrong_{uuid.uuid4().hex[:8]}@booktalent.com"
+        rs = requests.post(f"{API}/auth/email/send", json={"email": email}, timeout=15)
+        assert rs.status_code == 200
+        rv = requests.post(f"{API}/auth/email/verify", json={"email": email, "otp": "000000"}, timeout=15)
+        assert rv.status_code == 400
+
+    def test_email_verify_no_send_returns_400(self):
+        email = f"TEST_nosend_{uuid.uuid4().hex[:8]}@booktalent.com"
+        rv = requests.post(f"{API}/auth/email/verify", json={"email": email, "otp": "123456"}, timeout=15)
+        assert rv.status_code == 400
+
+    def test_email_verify_success_then_register(self):
+        email = f"TEST_reg_{uuid.uuid4().hex[:8]}@booktalent.com"
+        rs = requests.post(f"{API}/auth/email/send", json={"email": email, "name": "Reg"}, timeout=15)
+        assert rs.status_code == 200
+        otp = rs.json().get("test_otp") or "123456"
+        rv = requests.post(f"{API}/auth/email/verify", json={"email": email, "otp": otp}, timeout=15)
+        assert rv.status_code == 200
+        assert rv.json().get("verified") is True
+        # Now register should succeed
+        payload = {
+            "email": email, "password": "Test@1234", "first_name": "R",
+            "last_name": "User", "phone": "+919" + str(int(time.time()))[-9:],
+            "role": "customer",
+        }
+        rr = requests.post(f"{API}/auth/register", json=payload, timeout=20)
+        assert rr.status_code == 200, rr.text
+        data = rr.json()
+        assert isinstance(data.get("token"), str) and len(data["token"]) > 20
+        u = data["user"]
+        assert u.get("verified") is True
+        assert u.get("email_verified") is True
+
+    def test_register_without_email_verify_blocked(self):
+        email = f"TEST_block_{uuid.uuid4().hex[:8]}@booktalent.com"
+        # NO email/send + verify first → must be rejected
+        payload = {
+            "email": email, "password": "Test@1234", "first_name": "B",
+            "last_name": "User", "phone": "+919" + str(int(time.time()))[-9:],
+            "role": "customer",
+        }
+        r = requests.post(f"{API}/auth/register", json=payload, timeout=15)
+        assert r.status_code == 400
+        # Must mention email verification
+        assert "verify" in (r.json().get("detail") or "").lower()
 
 
 # ---------- ARTIST DISCOVERY ----------
@@ -500,6 +585,7 @@ class TestContractsAndInvoicePDF:
     def test_contract_pdf_forbidden_for_stranger(self, booking_ctx):
         # create another customer
         email = f"TEST_stranger_{uuid.uuid4().hex[:6]}@booktalent.com"
+        _verify_email(email)
         rr = requests.post(f"{API}/auth/register", json={
             "email": email, "password": "Test@1234", "first_name": "S",
             "last_name": "T", "phone": "+9199" + str(int(time.time()))[-8:],
@@ -540,6 +626,7 @@ class TestContractsAndInvoicePDF:
     def test_invoice_pdf_forbidden(self, booking_ctx):
         # register a stranger
         email = f"TEST_invs_{uuid.uuid4().hex[:6]}@booktalent.com"
+        _verify_email(email)
         rr = requests.post(f"{API}/auth/register", json={
             "email": email, "password": "Test@1234", "first_name": "S",
             "last_name": "T", "phone": "+9198" + str(int(time.time()))[-8:],

@@ -1,7 +1,8 @@
-import React, { useState } from "react";
+import React, { useEffect, useState } from "react";
 import { Link, useNavigate, useSearchParams } from "react-router-dom";
 import { useAuth } from "../lib/auth";
 import { useToast } from "../lib/toast";
+import api, { formatApiError as fmtErr } from "../lib/api";
 
 const ROLES = [
   { value: "customer", icon: "🎉", name: "Customer", desc: "I want to book artists for my events" },
@@ -26,6 +27,14 @@ export default function Auth({ mode = "signin" }) {
     first_name: "", last_name: "", phone: "",
     role: initialRole, category: "", city: "", company_name: "",
   });
+  const [emailOtp, setEmailOtp] = useState("");
+  const [mockOtpHint, setMockOtpHint] = useState("");
+  const [emailVerified, setEmailVerified] = useState(false);
+  const [emailProviderEnabled, setEmailProviderEnabled] = useState(false);
+
+  useEffect(() => {
+    api.get("/auth/config").then((r) => setEmailProviderEnabled(r.data?.email_provider_enabled));
+  }, []);
 
   const set = (k, v) => setForm((f) => ({ ...f, [k]: v }));
 
@@ -44,6 +53,7 @@ export default function Auth({ mode = "signin" }) {
   const doSignUp = async () => {
     if (form.password !== form.confirm) { toast("Passwords do not match", "error"); return; }
     if (form.password.length < 6) { toast("Password too short (min 6)", "error"); return; }
+    if (!emailVerified) { toast("Please verify your email first", "error"); return; }
     setBusy(true);
     try {
       const payload = {
@@ -58,6 +68,29 @@ export default function Auth({ mode = "signin" }) {
       const dest = u.role === "artist" ? "/artist" : u.role === "admin" ? "/admin" : "/customer";
       nav(dest);
     } catch (e) { toast(formatApiError(e), "error"); }
+    setBusy(false);
+  };
+
+  const sendEmailOtp = async () => {
+    if (!form.email) { toast("Enter your email first", "error"); return; }
+    setBusy(true);
+    try {
+      const r = await api.post("/auth/email/send", { email: form.email, name: form.first_name });
+      if (r.data?.test_otp) setMockOtpHint(r.data.test_otp);
+      toast(emailProviderEnabled ? "Code sent — check your inbox" : `Test code: ${r.data?.test_otp || "123456"}`);
+      setStep(3);
+    } catch (e) { toast(fmtErr(e), "error"); }
+    setBusy(false);
+  };
+
+  const verifyEmailOtp = async () => {
+    setBusy(true);
+    try {
+      await api.post("/auth/email/verify", { email: form.email, otp: emailOtp });
+      setEmailVerified(true);
+      toast("Email verified ✓");
+      setStep(4);
+    } catch (e) { toast(fmtErr(e), "error"); }
     setBusy(false);
   };
 
@@ -209,8 +242,64 @@ export default function Auth({ mode = "signin" }) {
                 </div>
                 <div className="flex gap-12">
                   <button className="btn btn-ghost" onClick={() => setStep(1)} data-testid="signup-back-1">← Back</button>
+                  <button
+                    className="btn btn-gold" style={{ flex: 1 }}
+                    onClick={() => {
+                      if (!form.first_name || !form.email || !form.password) { toast("Please fill all fields", "error"); return; }
+                      if (form.password !== form.confirm) { toast("Passwords do not match", "error"); return; }
+                      if (form.password.length < 6) { toast("Password too short (min 6)", "error"); return; }
+                      sendEmailOtp();
+                    }}
+                    disabled={busy} data-testid="signup-send-otp"
+                  >
+                    {busy ? "Sending…" : "Continue → Verify Email"}
+                  </button>
+                </div>
+              </>
+            )}
+
+            {step === 3 && (
+              <>
+                <div className="auth-title">Verify your <span className="gold-grad" style={{ background: "linear-gradient(135deg, var(--gold-light), var(--gold))", WebkitBackgroundClip: "text", color: "transparent" }}>Email</span></div>
+                <div className="auth-sub">
+                  We sent a 6-digit code to <b style={{ color: "var(--gold-light)" }}>{form.email}</b>.{" "}
+                  {emailProviderEnabled ? "Check your inbox (and spam folder)." : `Test code: ${mockOtpHint || "123456"}`}
+                </div>
+                <div className="field">
+                  <div className="field-label">Verification Code</div>
+                  <input
+                    className="field-input font-mono" style={{ fontSize: 22, letterSpacing: 8, textAlign: "center" }}
+                    value={emailOtp} maxLength={6}
+                    onChange={(e) => setEmailOtp(e.target.value.replace(/\D/g, ""))}
+                    placeholder="------" data-testid="signup-email-otp"
+                  />
+                </div>
+                <div className="flex gap-12">
+                  <button className="btn btn-ghost" onClick={() => setStep(2)} data-testid="signup-back-otp">← Back</button>
+                  <button className="btn btn-gold" style={{ flex: 1 }} onClick={verifyEmailOtp} disabled={busy || emailOtp.length !== 6} data-testid="signup-verify-otp">
+                    {busy ? "Verifying…" : "Verify & Continue →"}
+                  </button>
+                </div>
+                <button
+                  className="btn btn-ghost btn-sm mt-12" style={{ width: "100%" }}
+                  onClick={sendEmailOtp} disabled={busy} data-testid="signup-resend-otp"
+                >Resend Code</button>
+              </>
+            )}
+
+            {step === 4 && (
+              <>
+                <div className="auth-title">Almost <span className="gold-grad" style={{ background: "linear-gradient(135deg, var(--gold-light), var(--gold))", WebkitBackgroundClip: "text", color: "transparent" }}>there!</span></div>
+                <div className="auth-sub">Email verified ✓ — click below to finish creating your account.</div>
+                <div className="card card-pad mb-16" style={{ background: "rgba(16,185,129,0.06)", borderColor: "var(--green-border)" }}>
+                  <div className="text-green fs-13 mb-8">✓ Email Verified</div>
+                  <div className="fs-14 fw-600">{form.email}</div>
+                  <div className="text-muted fs-12 mt-4">Role: {form.role} · {form.first_name} {form.last_name}</div>
+                </div>
+                <div className="flex gap-12">
+                  <button className="btn btn-ghost" onClick={() => setStep(3)} data-testid="signup-back-final">← Back</button>
                   <button className="btn btn-gold" style={{ flex: 1 }} onClick={doSignUp} disabled={busy} data-testid="signup-submit">
-                    {busy ? "Creating…" : "Create Account →"}
+                    {busy ? "Creating…" : "Create My Account ✨"}
                   </button>
                 </div>
               </>

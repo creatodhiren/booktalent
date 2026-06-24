@@ -27,6 +27,9 @@ from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field, EmailStr, ConfigDict
 
 from pdf_service import generate_contract_pdf, generate_invoice_pdf
+from email_service import (
+    is_email_enabled, generate_otp, send_otp_email, send_booking_confirmation_email,
+)
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Setup
@@ -353,6 +356,11 @@ async def register(body: RegisterBody, response: Response):
     if await db.users.find_one({"email": email}):
         raise HTTPException(400, "Email already registered")
 
+    # Require prior email verification via /api/auth/email/verify
+    email_otp = await db.email_otps.find_one({"email": email})
+    if not email_otp or not email_otp.get("verified"):
+        raise HTTPException(400, "Please verify your email first")
+
     uid = new_id()
     now = utcnow()
     user_doc = {
@@ -364,7 +372,8 @@ async def register(body: RegisterBody, response: Response):
         "phone": body.phone,
         "role": body.role,
         "kyc_status": "unverified",
-        "verified": False,
+        "verified": True,
+        "email_verified": True,
         "created_at": now,
         "updated_at": now,
         "company_name": body.company_name,
@@ -442,6 +451,14 @@ async def login(body: LoginBody):
     return {"token": token, "user": clean(user)}
 
 
+@api.get("/auth/config")
+async def auth_config():
+    """Public config — frontend uses this to know whether to show 'test OTP' hint."""
+    return {
+        "email_provider_enabled": is_email_enabled(),
+    }
+
+
 @api.post("/auth/otp/send")
 async def otp_send(body: OTPBody):
     # mock OTP — always 123456
@@ -463,6 +480,90 @@ async def otp_verify(body: OTPBody):
     if user:
         token = make_token(user["id"], user["role"])
         return {"verified": True, "token": token, "user": clean(user)}
+    return {"verified": True, "token": None}
+
+
+# ─── Email verification ────────────────────────────────────────────────
+class EmailOTPSendBody(BaseModel):
+    email: EmailStr
+    name: Optional[str] = ""
+
+
+class EmailOTPVerifyBody(BaseModel):
+    email: EmailStr
+    otp: str
+
+
+@api.post("/auth/email/send")
+async def email_otp_send(body: EmailOTPSendBody):
+    email = body.email.lower()
+
+    # 60-second cooldown
+    existing = await db.email_otps.find_one({"email": email})
+    if existing:
+        try:
+            sent_at = datetime.fromisoformat(existing.get("sent_at", utcnow()))
+        except Exception:
+            sent_at = datetime.now(timezone.utc)
+        if (datetime.now(timezone.utc) - sent_at) < timedelta(seconds=60):
+            raise HTTPException(429, "Please wait 60 seconds before requesting a new code")
+
+    otp = generate_otp()
+    expires = (datetime.now(timezone.utc) + timedelta(minutes=10)).isoformat()
+    name = body.name or ""
+    # If a user already exists, prefer their stored name
+    u = await db.users.find_one({"email": email})
+    if u and not name:
+        name = (u.get("first_name") or "").strip()
+
+    await db.email_otps.update_one(
+        {"email": email},
+        {"$set": {
+            "email": email, "otp": otp,
+            "sent_at": utcnow(), "expires_at": expires,
+            "verified": False, "attempts": (existing.get("attempts", 0) + 1) if existing else 1,
+        }},
+        upsert=True,
+    )
+    result = await send_otp_email(email, otp, name)
+    return {
+        "sent": result.get("sent", False),
+        "mock": result.get("mock", False),
+        # In mock mode, expose the OTP so the user can complete signup without an inbox
+        "test_otp": otp if not is_email_enabled() else None,
+    }
+
+
+@api.post("/auth/email/verify")
+async def email_otp_verify(body: EmailOTPVerifyBody):
+    email = body.email.lower()
+    rec = await db.email_otps.find_one({"email": email})
+    if not rec:
+        raise HTTPException(400, "No verification code requested for this email")
+    # Expiry check
+    try:
+        expires = datetime.fromisoformat(rec.get("expires_at", utcnow()))
+    except Exception:
+        expires = datetime.now(timezone.utc)
+    if datetime.now(timezone.utc) > expires:
+        raise HTTPException(400, "Code expired — please request a new one")
+    if str(rec.get("otp")) != str(body.otp).strip():
+        raise HTTPException(400, "Invalid code")
+
+    await db.email_otps.update_one(
+        {"email": email}, {"$set": {"verified": True, "verified_at": utcnow()}},
+    )
+    # If a user already exists with this email, mark them verified and issue a token
+    user = await db.users.find_one({"email": email})
+    if user:
+        await db.users.update_one(
+            {"id": user["id"]},
+            {"$set": {"email_verified": True, "verified": True}},
+        )
+        token = make_token(user["id"], user["role"])
+        user["email_verified"] = True
+        return {"verified": True, "token": token, "user": clean(user)}
+    # Just verified the email — caller will use it to complete signup
     return {"verified": True, "token": None}
 
 
