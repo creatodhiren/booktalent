@@ -77,7 +77,7 @@ export default function Auth({ mode = "signin" }) {
     try {
       const r = await api.post("/auth/email/send", { email: form.email, name: form.first_name });
       if (r.data?.test_otp) setMockOtpHint(r.data.test_otp);
-      toast(emailProviderEnabled ? "Code sent — check your inbox" : `Test code: ${r.data?.test_otp || "123456"}`);
+      toast(emailProviderEnabled ? "Code sent — check your inbox" : "Code sent", "success");
       setStep(3);
     } catch (e) { toast(fmtErr(e), "error"); }
     setBusy(false);

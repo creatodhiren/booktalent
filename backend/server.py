@@ -360,6 +360,8 @@ async def register(body: RegisterBody, response: Response):
     email_otp = await db.email_otps.find_one({"email": email})
     if not email_otp or not email_otp.get("verified"):
         raise HTTPException(400, "Please verify your email first")
+    # Consume the OTP record so the same verified token can't be reused later
+    await db.email_otps.delete_one({"email": email})
 
     uid = new_id()
     now = utcnow()
