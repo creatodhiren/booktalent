@@ -1570,8 +1570,10 @@ async def payment_verify(body: PaymentVerifyBody, user: dict = Depends(get_curre
         {"$set": {"payment_status": "token_paid", "amount_paid": new_amount_paid, "status": "pending_artist"},
          "$push": {"history": {"at": utcnow(), "action": "paid_token", "by": user["id"], "amount": pay["amount"], "gateway": pay.get("gateway")}}},
     )
-    # Escrow: pending on artist wallet
-    await db.wallets.update_one({"user_id": booking["artist_id"]}, {"$inc": {"pending": pay["amount"]}})
+    # Under the intermediary-marketplace model, the customer's payment is the
+    # BookTalent Platform Service Fee + GST — NOT money belonging to the artist.
+    # We therefore DO NOT add it to the artist's wallet pending balance.
+    # (Artist Performance Fee is settled directly Customer ↔ Artist.)
     # Customer ledger
     await db.transactions.insert_one({
         "id": new_id(), "user_id": user["id"], "type": "payment",
@@ -2832,6 +2834,28 @@ app.include_router(_iter9_router, prefix="/api")
 @app.on_event("startup")
 async def _iter7_startup():
     await _iter7_router.seed()
+    # ── One-shot data migrations for the intermediary-marketplace model ──
+    # 1. Backfill artist_fee on legacy bookings so admin reports normalise.
+    legacy = db.bookings.find({"pricing.artist_fee": {"$exists": False}}, {"id": 1, "pricing": 1})
+    migrated = 0
+    async for b in legacy:
+        p = b.get("pricing", {}) or {}
+        artist_fee = float(p.get("package_fee", 0) + p.get("addons_total", 0) - p.get("coupon_discount", 0))
+        await db.bookings.update_one(
+            {"id": b["id"]},
+            {"$set": {"pricing.artist_fee": round(max(0, artist_fee), 2)}},
+        )
+        migrated += 1
+    if migrated:
+        log.info("Backfilled artist_fee on %d legacy bookings", migrated)
+
+    # 2. Reset negative artist-wallet pending balances (legacy escrow bug).
+    fix_res = await db.wallets.update_many(
+        {"pending": {"$lt": 0}},
+        {"$set": {"pending": 0}},
+    )
+    if fix_res.modified_count:
+        log.info("Reset %d negative wallet pending balances", fix_res.modified_count)
 
 
 @app.on_event("shutdown")

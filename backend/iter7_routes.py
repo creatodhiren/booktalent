@@ -759,21 +759,22 @@ def make_router(db, get_current_user, admin_only) -> APIRouter:
 
     @r.get("/admin/reports/top-artists")
     async def top_artists(limit: int = 10, _: dict = Depends(admin_only)):
-        # Rank by artist_fee (marketplace volume each artist drives) — this is what
-        # actually flows through them, even though BookTalent only collects the platform fee.
-        pipe = [
-            {"$match": {"status": {"$in": ["confirmed", "completed", "reviewed"]}}},
-            {"$group": {"_id": "$artist_id", "bookings": {"$sum": 1}, "revenue": {"$sum": "$pricing.artist_fee"}}},
-            {"$sort": {"revenue": -1}},
-            {"$limit": limit},
-        ]
-        rows = await db.bookings.aggregate(pipe).to_list(limit)
+        # Python-side aggregate so we can fall back to (package_fee + addons_total)
+        # for legacy bookings that have no `artist_fee` field.
+        agg: Dict[str, Dict[str, float]] = {}
+        async for b in db.bookings.find({"status": {"$in": ["confirmed", "completed", "reviewed"]}}, {"artist_id": 1, "pricing": 1, "_id": 0}):
+            p = b.get("pricing", {}) or {}
+            fee = float(p.get("artist_fee", p.get("package_fee", 0) + p.get("addons_total", 0)))
+            row = agg.setdefault(b["artist_id"], {"bookings": 0, "revenue": 0.0})
+            row["bookings"] += 1
+            row["revenue"] += fee
+        rows = sorted(agg.items(), key=lambda kv: kv[1]["revenue"], reverse=True)[:limit]
         out = []
-        for row in rows:
-            prof = await db.artist_profiles.find_one({"user_id": row["_id"]}, {"stage_name": 1, "category": 1, "city": 1, "user_id": 1})
+        for aid, row in rows:
+            prof = await db.artist_profiles.find_one({"user_id": aid}, {"stage_name": 1, "category": 1, "city": 1, "user_id": 1})
             if prof:
                 out.append({
-                    "artist_id": row["_id"],
+                    "artist_id": aid,
                     "stage_name": prof.get("stage_name"),
                     "category": prof.get("category"),
                     "city": prof.get("city"),
