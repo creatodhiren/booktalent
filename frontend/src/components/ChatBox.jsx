@@ -56,7 +56,7 @@ export default function ChatBox({ bookingId, otherName = "Counterparty", payment
   useEffect(() => {
     if (!bookingId || !user) return;
     if (!access?.enabled) return; // payment gate
-    const token = localStorage.getItem("token");
+    const token = localStorage.getItem("bt_token");
     if (!token) return;
     const base = (api.defaults.baseURL || "").replace(/^http/, "ws");
     const url = `${base}/ws/chat/${bookingId}?token=${encodeURIComponent(token)}`;
