@@ -603,8 +603,10 @@ function MediaManager({ data, refresh, toast }) {
               <div style={{ display: "grid", placeItems: "center", height: "100%", fontSize: 48 }}>🎵</div>
             ) : m.mime === "application/pdf" ? (
               <div style={{ display: "grid", placeItems: "center", height: "100%", fontSize: 48 }}>📄</div>
+            ) : m.mime?.startsWith("image/") ? (
+              <img src={`${api.defaults.baseURL}/media/${m.id}/thumb`} alt={m.title || ""} onError={(e) => { e.target.style.display = "none"; e.target.parentElement.insertAdjacentHTML("beforeend", '<div style="display:grid;place-items:center;height:100%;font-size:48px">📎</div>'); }} />
             ) : (
-              <img src={`${api.defaults.baseURL}/media/${m.id}/thumb`} alt={m.title || ""} />
+              <div style={{ display: "grid", placeItems: "center", height: "100%", fontSize: 48 }}>📎</div>
             )}
             {m.is_featured && (
               <div style={{ position: "absolute", top: 6, left: 6, padding: "2px 7px", background: "var(--gold)", color: "#000", fontSize: 10, fontWeight: 700, borderRadius: 5 }}>★ FEATURED</div>
@@ -807,35 +809,121 @@ function Reviews({ data, refresh, toast }) {
 }
 
 function Boost({ refresh, toast }) {
-  const [busy, setBusy] = useState(false);
-  const activate = async (plan) => {
-    setBusy(true);
-    try {
-      await api.post("/boost/activate", { plan });
-      toast(`Boost ${plan} activated!`);
-      refresh();
-    } catch (e) { toast(formatApiError(e), "error"); }
-    setBusy(false);
+  const [packages, setPackages] = useState([]);
+  const [mine, setMine] = useState([]);
+  const [busy, setBusy] = useState(null);
+  const [filter, setFilter] = useState("all");
+
+  const load = async () => {
+    const [p, m] = await Promise.all([api.get("/boost/packages"), api.get("/boost/mine")]);
+    setPackages(p.data);
+    setMine(m.data);
   };
+  useEffect(() => { load(); }, []);
+
+  const purchase = async (pkg) => {
+    if (!window.confirm(`Purchase ${pkg.name} for ₹${pkg.price}? (Mock payment in test mode)`)) return;
+    setBusy(pkg.id);
+    try {
+      await api.post("/boost/purchase", { package_id: pkg.id, payment_method: "mock" });
+      toast(`✓ Activated: ${pkg.name}`);
+      await load();
+      refresh && refresh();
+    } catch (e) { toast(formatApiError(e), "error"); }
+    setBusy(null);
+  };
+
+  const TYPE_LABELS = {
+    featured_artist: "⭐ Featured Artist",
+    homepage_banner: "🏆 Homepage Banner",
+    category_top: "👑 Category Top",
+    search_priority: "🚀 Search Priority",
+    premium_badge: "💎 Premium Badge",
+    verified_badge: "✓ Verified Badge",
+    city_featured: "🏙️ City Featured",
+    trending: "🔥 Trending",
+    recommended: "👍 Recommended",
+  };
+
+  const types = ["all", ...Object.keys(TYPE_LABELS)];
+  const filtered = filter === "all" ? packages : packages.filter((p) => p.type === filter);
+  const activeSubs = mine.filter((s) => s.status === "active");
+
   return (
     <div data-testid="boost-tab">
-      <h2 className="font-serif fs-20 fw-700 mb-16">Boost Your Profile</h2>
-      <div className="grid grid-3">
-        {[
-          { id: "starter", name: "Starter Boost", price: 999, days: 7, feats: ["2x visibility", "Category highlight", "Search priority"] },
-          { id: "pro", name: "Pro Boost", price: 2499, days: 30, popular: true, feats: ["5x visibility", "Homepage feature", "Top search", "Social promo"] },
-          { id: "elite", name: "Elite Campaign", price: 7499, days: 90, feats: ["10x visibility", "Dedicated campaign", "Email newsletter", "Account manager"] },
-        ].map((p) => (
-          <div key={p.id} className={`pkg-card ${p.popular ? "popular" : ""}`} data-testid={`boost-${p.id}`}>
-            {p.popular && <span className="popular-tag">RECOMMENDED</span>}
-            <div className="pkg-name">{p.name}</div>
-            <div className="pkg-price">{fmtINRFull(p.price)}</div>
-            <div className="text-muted fs-12 mb-12">For {p.days} days</div>
-            <ul className="pkg-features">{p.feats.map((f, i) => <li key={i}>{f}</li>)}</ul>
-            <button className="btn btn-gold btn-block mt-16" onClick={() => activate(p.id)} disabled={busy} data-testid={`activate-${p.id}`}>Activate</button>
+      <div className="flex items-center" style={{ justifyContent: "space-between", marginBottom: 16 }}>
+        <div>
+          <h2 className="font-serif fs-20 fw-700">Boost Your Profile</h2>
+          <p className="text-muted fs-13">Premium promotion packages — pay once, get visibility for days.</p>
+        </div>
+        {activeSubs.length > 0 && (
+          <div className="pill pill-gold" data-testid="active-boost-count">{activeSubs.length} Active Boost{activeSubs.length > 1 ? "s" : ""}</div>
+        )}
+      </div>
+
+      {activeSubs.length > 0 && (
+        <div className="card card-pad mb-16" data-testid="active-boosts">
+          <div className="fw-700 mb-8">Your Active Boosts</div>
+          <div className="grid grid-3 gap-12">
+            {activeSubs.map((s) => (
+              <div key={s.id} className="card card-pad" style={{ background: "var(--glass)" }}>
+                <div className="text-gold fw-700">{TYPE_LABELS[s.type] || s.type}</div>
+                <div className="fs-12">{s.package_snapshot?.name}</div>
+                <div className="text-muted fs-11 mt-4">Expires {s.expires_at?.slice(0, 10)}</div>
+              </div>
+            ))}
           </div>
+        </div>
+      )}
+
+      <div className="flex gap-8 mb-16" style={{ flexWrap: "wrap", marginBottom: 16 }}>
+        {types.map((t) => (
+          <button key={t} className={`btn btn-xs ${filter === t ? "btn-gold" : "btn-ghost"}`} onClick={() => setFilter(t)} data-testid={`boost-filter-${t}`}>
+            {t === "all" ? "All" : TYPE_LABELS[t]}
+          </button>
         ))}
       </div>
+
+      <div className="grid grid-3 gap-16">
+        {filtered.length === 0 && <div className="text-muted">No packages available.</div>}
+        {filtered.map((p) => {
+          const total = (p.price + p.price * p.gst_pct / 100).toFixed(0);
+          return (
+            <div key={p.id} className="pkg-card" data-testid={`pkg-${p.id}`}>
+              <div className="text-muted fs-11 mb-4" style={{ marginBottom: 4 }}>{TYPE_LABELS[p.type] || p.type}</div>
+              <div className="pkg-name">{p.name}</div>
+              <div className="pkg-price">{fmtINRFull(p.price)}</div>
+              <div className="text-muted fs-12 mb-12">+ {p.gst_pct}% GST = {fmtINRFull(total)}</div>
+              <div className="fs-12 mb-8" style={{ marginBottom: 8 }}>⏱️ {p.duration_days} days</div>
+              {p.description && <div className="text-muted fs-12 mb-12">{p.description}</div>}
+              <button className="btn btn-gold btn-block mt-16" onClick={() => purchase(p)} disabled={busy === p.id} data-testid={`purchase-${p.id}`}>
+                {busy === p.id ? "Activating..." : "Activate"}
+              </button>
+            </div>
+          );
+        })}
+      </div>
+
+      {mine.length > activeSubs.length && (
+        <div className="card card-pad mt-24" style={{ marginTop: 24 }}>
+          <div className="fw-700 mb-12">Past Subscriptions</div>
+          <div className="table-wrap">
+            <table className="table">
+              <thead><tr><th>Package</th><th>Started</th><th>Expired</th><th>Status</th></tr></thead>
+              <tbody>
+                {mine.filter((s) => s.status !== "active").map((s) => (
+                  <tr key={s.id}>
+                    <td>{s.package_snapshot?.name}</td>
+                    <td className="fs-12">{s.starts_at?.slice(0, 10)}</td>
+                    <td className="fs-12">{s.expires_at?.slice(0, 10)}</td>
+                    <td><span className="pill pill-amber">{s.status}</span></td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

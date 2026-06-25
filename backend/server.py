@@ -31,6 +31,8 @@ from email_service import (
     is_email_enabled, generate_otp, send_otp_email, send_booking_confirmation_email,
 )
 from image_service import compress_image, make_thumbnail
+from iter7_routes import make_router as make_iter7_router
+from notification_service import dispatch as notify_dispatch
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Setup
@@ -1232,6 +1234,22 @@ async def booking_action(bid: str, body: BookingStatusUpdate, user: dict = Depen
                 artist_name,
                 doc.get("event_date", ""),
             )
+            # Smart notification: confirm both parties + admin via dispatcher
+            await notify_dispatch(db, user_id=doc["customer_id"], event="booking.confirmed",
+                channels=["in_app", "email"],
+                ctx={"title": "Booking confirmed", "body": f"Your booking {doc['ref']} with {artist_name} for {doc['event_date']} is confirmed.",
+                     "artist_name": artist_name, "event_date": doc.get("event_date", ""), "ref": doc.get("ref", "")},
+                email=doc.get("customer_email"))
+            await notify_dispatch(db, user_id=doc["artist_id"], event="booking.confirmed",
+                channels=["in_app", "email"],
+                ctx={"title": "You accepted a booking", "body": f"Booking {doc['ref']} is now confirmed. Event: {doc['event_date']}",
+                     "ref": doc.get("ref", ""), "event_date": doc.get("event_date", "")},
+                email=artist_u.get("email"))
+            # Notify all admins
+            async for adm in db.users.find({"role": "admin"}, {"id": 1, "email": 1}):
+                await notify_dispatch(db, user_id=adm["id"], event="booking.confirmed.admin",
+                    channels=["in_app"],
+                    ctx={"title": "New booking confirmed", "body": f"Booking {doc['ref']} confirmed: {artist_name} → {doc.get('customer_name', '')}"})
         except Exception as _e:
             log.warning("Confirmation email failed: %s", _e)
     elif body.action == "reject" and (is_artist or is_admin) and doc["status"] in ("pending_artist", "pending_payment"):
@@ -2406,6 +2424,16 @@ async def cities():
 
 
 app.include_router(api)
+
+
+# Iteration 7 — Enterprise routes (Admin ERP, Boost, Notifications, Advanced Search)
+_iter7_router = make_iter7_router(db, get_current_user, admin_only)
+app.include_router(_iter7_router, prefix="/api")
+
+
+@app.on_event("startup")
+async def _iter7_startup():
+    await _iter7_router.seed()
 
 
 @app.on_event("shutdown")

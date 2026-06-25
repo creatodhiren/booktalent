@@ -4,6 +4,10 @@ import Nav from "../components/Nav";
 import api, { fmtINRFull, formatApiError } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { useToast } from "../lib/toast";
+import {
+  AdminMaster, AdminBoost, AdminTemplates, AdminFAQs,
+  AdminCMS, AdminBroadcast, AdminSettings, AdminAudit, AdminReports,
+} from "./admin/AdminEnterprise";
 
 const SIDEBAR = [
   { id: "overview", label: "📊 Overview" },
@@ -14,6 +18,15 @@ const SIDEBAR = [
   { id: "coupons", label: "🎫 Coupons" },
   { id: "users", label: "👥 Users" },
   { id: "disputes", label: "⚖️ Disputes" },
+  { id: "master", label: "🗂️ Master Data" },
+  { id: "boost", label: "🚀 Boost Manager" },
+  { id: "templates", label: "📧 Templates" },
+  { id: "faqs", label: "❓ FAQs" },
+  { id: "cms", label: "📄 CMS Pages" },
+  { id: "broadcast", label: "📢 Broadcast" },
+  { id: "reports", label: "📈 Reports" },
+  { id: "settings", label: "⚙️ Settings" },
+  { id: "audit", label: "🛡️ Audit Logs" },
 ];
 
 export default function AdminDashboard() {
@@ -73,6 +86,15 @@ export default function AdminDashboard() {
           {tab === "coupons" && <AdminCoupons toast={toast} />}
           {tab === "users" && <AdminUsers />}
           {tab === "disputes" && <AdminDisputes toast={toast} />}
+          {tab === "master" && <AdminMaster toast={toast} />}
+          {tab === "boost" && <AdminBoost toast={toast} />}
+          {tab === "templates" && <AdminTemplates toast={toast} />}
+          {tab === "faqs" && <AdminFAQs toast={toast} />}
+          {tab === "cms" && <AdminCMS toast={toast} />}
+          {tab === "broadcast" && <AdminBroadcast toast={toast} />}
+          {tab === "reports" && <AdminReports />}
+          {tab === "settings" && <AdminSettings toast={toast} />}
+          {tab === "audit" && <AdminAudit />}
         </div>
       </main>
     </div>
@@ -92,11 +114,11 @@ function OverviewAdmin({ stats }) {
     <div className="card card-pad" data-testid="admin-overview">
       <h3 className="font-serif fs-20 fw-700 mb-16">Quick Stats</h3>
       <div className="grid grid-3">
-        <div className="card card-pad"><div className="text-muted fs-11">Total Artists</div><div className="fs-20 fw-700">{stats.total_artists}</div></div>
-        <div className="card card-pad"><div className="text-muted fs-11">Total Customers</div><div className="fs-20 fw-700">{stats.total_customers}</div></div>
-        <div className="card card-pad"><div className="text-muted fs-11">Avg Rating</div><div className="fs-20 fw-700 text-gold">★ {stats.avg_rating}</div></div>
-        <div className="card card-pad"><div className="text-muted fs-11">Bookings Today</div><div className="fs-20 fw-700">{stats.bookings_today}</div></div>
-        <div className="card card-pad"><div className="text-muted fs-11">Pending Bookings</div><div className="fs-20 fw-700">{stats.pending_bookings}</div></div>
+        <div className="card card-pad" data-testid="stat-total-artists"><div className="text-muted fs-11">Total Artists</div><div className="fs-20 fw-700">{stats.total_artists ?? 0}</div></div>
+        <div className="card card-pad" data-testid="stat-total-customers"><div className="text-muted fs-11">Total Customers</div><div className="fs-20 fw-700">{stats.total_customers ?? 0}</div></div>
+        <div className="card card-pad" data-testid="stat-avg-rating"><div className="text-muted fs-11">Avg Rating</div><div className="fs-20 fw-700 text-gold">★ {stats.avg_rating ?? 0}</div></div>
+        <div className="card card-pad" data-testid="stat-bookings-today"><div className="text-muted fs-11">Bookings Today</div><div className="fs-20 fw-700">{stats.bookings_today ?? 0}</div></div>
+        <div className="card card-pad" data-testid="stat-pending-bookings"><div className="text-muted fs-11">Pending Bookings</div><div className="fs-20 fw-700">{stats.pending_bookings ?? 0}</div></div>
       </div>
     </div>
   );
