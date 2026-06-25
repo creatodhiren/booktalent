@@ -55,6 +55,7 @@ export default function BookingFlow() {
   const [paymentMethod, setPaymentMethod] = useState("card");
   const [successData, setSuccessData] = useState(null);
   const [paymentConfig, setPaymentConfig] = useState({ razorpay_enabled: false });
+  const [alternatives, setAlternatives] = useState(null);
 
   useEffect(() => {
     if (!user) { nav("/login"); return; }
@@ -84,11 +85,22 @@ export default function BookingFlow() {
 
   const submitBooking = async () => {
     setBusy(true);
+    setAlternatives(null);
     try {
       // 1. Create booking
-      const r = await api.post("/bookings", { artist_id: id, ...form });
+      let r;
+      try {
+        r = await api.post("/bookings", { artist_id: id, ...form });
+      } catch (e) {
+        const detail = e?.response?.data?.detail;
+        if (typeof detail === "object" && detail?.alternatives) {
+          setAlternatives({ message: detail.message, date: detail.date, list: detail.alternatives });
+          setBusy(false);
+          return;
+        }
+        throw e;
+      }
       const booking = r.data;
-      // 2. Init payment
       const initR = await api.post("/payments/init", { booking_id: booking.id, method: paymentMethod });
 
       if (initR.data.gateway === "razorpay") {
@@ -459,6 +471,37 @@ export default function BookingFlow() {
           )}
         </div>
       </div>
+
+      {alternatives && (
+        <div className="modal-bg" onClick={() => setAlternatives(null)} data-testid="alternatives-modal">
+          <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+            <div className="modal-title">📅 Date Not Available</div>
+            <div className="modal-sub">{alternatives.message} on {alternatives.date}. Here are some great alternatives:</div>
+            {alternatives.list.length === 0 ? (
+              <div className="empty"><div className="empty-icon">🔍</div><div className="empty-title">No alternatives found</div><p className="fs-13">Try picking a different date.</p></div>
+            ) : (
+              <div className="flex-col gap-12">
+                {alternatives.list.map((a) => (
+                  <div
+                    key={a.user_id} className="card card-pad flex items-center gap-12"
+                    onClick={() => { window.location.href = `/artist/${a.user_id}`; }}
+                    style={{ cursor: "pointer" }}
+                    data-testid={`alt-${a.user_id}`}
+                  >
+                    <div className="avatar avatar-lg" style={{ background: "linear-gradient(135deg, var(--purple), var(--gold))", width: 48, height: 48, fontSize: 22 }}>{a.emoji || "🎤"}</div>
+                    <div style={{ flex: 1 }}>
+                      <div className="fw-700 font-serif">{a.stage_name}</div>
+                      <div className="text-muted fs-12">{a.category} · 📍 {a.city}</div>
+                    </div>
+                    <div className="text-gold fs-13 fw-700">★ {(a.rating_avg || 0).toFixed(1)}</div>
+                  </div>
+                ))}
+              </div>
+            )}
+            <button className="btn btn-ghost btn-block mt-16" onClick={() => { setAlternatives(null); setStep(2); }} data-testid="alt-pick-different-date">Pick a Different Date</button>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

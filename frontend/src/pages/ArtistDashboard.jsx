@@ -5,6 +5,7 @@ import api, { fmtINRFull, formatApiError, mediaUrl } from "../lib/api";
 import { useAuth } from "../lib/auth";
 import { useToast } from "../lib/toast";
 import { BookingsTable } from "./CustomerDashboard";
+import OnboardingWizard from "../components/OnboardingWizard";
 
 const SIDEBAR = [
   { id: "overview", label: "📊 Overview" },
@@ -25,6 +26,26 @@ export default function ArtistDashboard() {
   const nav = useNavigate();
   const [tab, setTab] = useState("overview");
   const [data, setData] = useState({ bookings: [], packages: [], media: [], analytics: {}, wallet: {}, txns: [], reviews: [] });
+  const [showWizard, setShowWizard] = useState(false);
+  const [counterModal, setCounterModal] = useState(null);
+
+  // Auto-show wizard if onboarding required (test-unblocking scaffold)
+  useEffect(() => {
+    if (!user || user.role !== "artist") return;
+    api.get("/onboarding/me").then((r) => {
+      if (r.data?.required && !r.data?.completed) setShowWizard(true);
+    }).catch(() => {});
+  }, [user]);
+
+  const submitCounter = async (price) => {
+    if (!counterModal) return;
+    try {
+      await api.post(`/bookings/${counterModal.id}/action`, { action: "counter", counter_price: Number(price) });
+      toast("Counter offer sent");
+      setCounterModal(null);
+      refresh();
+    } catch (e) { toast(formatApiError(e), "error"); }
+  };
 
   useEffect(() => {
     if (!user) { nav("/login"); return; }
@@ -100,6 +121,35 @@ export default function ArtistDashboard() {
           {tab === "kyc" && <KYC toast={toast} refresh={refresh} />}
         </div>
       </main>
+      {showWizard && <OnboardingWizard user={user} onComplete={() => { setShowWizard(false); refresh(); refreshMe(); }} />}
+      {counterModal && <CounterModal booking={counterModal} onSubmit={submitCounter} onClose={() => setCounterModal(null)} />}
+    </div>
+  );
+}
+
+function CounterModal({ booking, onSubmit, onClose }) {
+  const [price, setPrice] = useState(booking?.pricing?.package_fee || "");
+  return (
+    <div className="modal-bg" onClick={onClose} data-testid="counter-modal">
+      <div className="modal-card" onClick={(e) => e.stopPropagation()}>
+        <div className="modal-title">Counter Offer</div>
+        <div className="modal-sub">{booking.event_type} · {booking.event_date}</div>
+        <div className="card card-pad mb-16">
+          <div className="text-muted fs-12">Customer offered (package fee)</div>
+          <div className="font-serif fs-18 fw-700">{fmtINRFull(booking?.pricing?.package_fee || 0)}</div>
+        </div>
+        <div className="field">
+          <div className="field-label">Your Counter Price (₹)</div>
+          <input type="number" className="field-input" value={price} onChange={(e) => setPrice(e.target.value)} data-testid="counter-price-input" />
+          <div className="field-hint">Customer will be notified to accept or decline.</div>
+        </div>
+        <div className="flex gap-12">
+          <button className="btn btn-ghost" onClick={onClose}>Cancel</button>
+          <button className="btn btn-gold" style={{ flex: 1 }} onClick={() => onSubmit(booking.id, price)} disabled={!price} data-testid="counter-submit">
+            Send Counter Offer
+          </button>
+        </div>
+      </div>
     </div>
   );
 }
@@ -140,14 +190,24 @@ function Overview({ data, doAction }) {
 }
 
 function ProfileEditor({ user, refreshMe, toast }) {
-  const [form, setForm] = useState({ bio: "", tagline: "", city: "", languages: "", genres: "", event_types: "" });
+  const [form, setForm] = useState({
+    bio: "", tagline: "", city: "", languages: "", genres: "", event_types: "",
+    awards: "", certifications: "", youtube_url: "", instagram_url: "", spotify_url: "",
+  });
   const [loaded, setLoaded] = useState(false);
   useEffect(() => {
     api.get("/auth/me").then((r) => {
       const p = r.data.artist_profile || {};
       setForm({
         bio: p.bio || "", tagline: p.tagline || "", city: p.city || "",
-        languages: (p.languages || []).join(", "), genres: (p.genres || []).join(", "), event_types: (p.event_types || []).join(", "),
+        languages: (p.languages || []).join(", "),
+        genres: (p.genres || []).join(", "),
+        event_types: (p.event_types || []).join(", "),
+        awards: (p.awards || []).join("\n"),
+        certifications: (p.certifications || []).join("\n"),
+        youtube_url: p.youtube_url || "",
+        instagram_url: p.instagram_url || "",
+        spotify_url: p.spotify_url || "",
       });
       setLoaded(true);
     });
@@ -159,6 +219,11 @@ function ProfileEditor({ user, refreshMe, toast }) {
         languages: form.languages.split(",").map(s => s.trim()).filter(Boolean),
         genres: form.genres.split(",").map(s => s.trim()).filter(Boolean),
         event_types: form.event_types.split(",").map(s => s.trim()).filter(Boolean),
+        awards: form.awards.split("\n").map(s => s.trim()).filter(Boolean),
+        certifications: form.certifications.split("\n").map(s => s.trim()).filter(Boolean),
+        youtube_url: form.youtube_url,
+        instagram_url: form.instagram_url,
+        spotify_url: form.spotify_url,
       });
       toast("Profile saved");
       refreshMe();
@@ -195,6 +260,29 @@ function ProfileEditor({ user, refreshMe, toast }) {
           <div className="field-label">Event Types</div>
           <input className="field-input" value={form.event_types} onChange={(e) => setForm({ ...form, event_types: e.target.value })} data-testid="prof-event-types" />
         </div>
+      </div>
+      <div className="field">
+        <div className="field-label">Awards (one per line)</div>
+        <textarea className="field-input" rows={3} value={form.awards} onChange={(e) => setForm({ ...form, awards: e.target.value })} placeholder="MTV India Music Award 2023" data-testid="prof-awards" />
+      </div>
+      <div className="field">
+        <div className="field-label">Certifications (one per line)</div>
+        <textarea className="field-input" rows={3} value={form.certifications} onChange={(e) => setForm({ ...form, certifications: e.target.value })} placeholder="Trinity College London - Grade 8 Vocals" data-testid="prof-certifications" />
+      </div>
+      <h3 className="fs-13 fw-600 mb-12 mt-16 text-muted" style={{ textTransform: "uppercase", letterSpacing: 1 }}>Social Links</h3>
+      <div className="field-row">
+        <div className="field">
+          <div className="field-label">YouTube</div>
+          <input className="field-input" value={form.youtube_url} onChange={(e) => setForm({ ...form, youtube_url: e.target.value })} placeholder="https://youtube.com/@you" data-testid="prof-youtube" />
+        </div>
+        <div className="field">
+          <div className="field-label">Instagram</div>
+          <input className="field-input" value={form.instagram_url} onChange={(e) => setForm({ ...form, instagram_url: e.target.value })} placeholder="https://instagram.com/you" data-testid="prof-instagram" />
+        </div>
+      </div>
+      <div className="field">
+        <div className="field-label">Spotify (optional)</div>
+        <input className="field-input" value={form.spotify_url} onChange={(e) => setForm({ ...form, spotify_url: e.target.value })} placeholder="https://spotify.com/artist/..." data-testid="prof-spotify" />
       </div>
       <button className="btn btn-gold" onClick={save} data-testid="prof-save">Save Changes</button>
     </div>
@@ -286,7 +374,7 @@ function MediaManager({ data, refresh, toast }) {
     setBusy(true);
     try {
       for (const f of files) {
-        if (f.size > 10 * 1024 * 1024) { toast("File too large (max 10MB each)", "error"); continue; }
+        if (f.size > 12 * 1024 * 1024) { toast(`${f.name} too large (max 12MB)`, "error"); continue; }
         const dataUrl = await new Promise((res) => {
           const r = new FileReader();
           r.onload = () => res(r.result);
@@ -315,7 +403,7 @@ function MediaManager({ data, refresh, toast }) {
         <input ref={inputRef} type="file" multiple accept="image/*,video/*" onChange={(e) => upload(e.target.files, "gallery")} />
         <div className="upload-zone-icon">📁</div>
         <div className="fs-14 fw-600 mb-4">Drop files here or click to browse</div>
-        <div className="text-muted fs-12">Images & videos up to 10MB each</div>
+        <div className="text-muted fs-12">Images & videos up to 12MB each (local storage)</div>
         {busy && <div className="spinner mt-12" style={{ margin: "12px auto 0" }} />}
       </div>
       <div className="media-grid">

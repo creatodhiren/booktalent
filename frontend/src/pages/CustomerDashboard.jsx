@@ -188,6 +188,7 @@ export function BookingsTable({ bookings, role, onAction, onReview }) {
                     {role === "artist" && b.status === "pending_artist" && (
                       <>
                         <button className="btn btn-green btn-xs" onClick={() => onAction(b.id, "accept")} data-testid={`accept-${b.id}`}>Accept</button>
+                        <button className="btn btn-purple btn-xs" onClick={() => onAction(b.id, "counter")} data-testid={`counter-${b.id}`}>Counter</button>
                         <button className="btn btn-red btn-xs" onClick={() => onAction(b.id, "reject")} data-testid={`reject-${b.id}`}>Reject</button>
                       </>
                     )}

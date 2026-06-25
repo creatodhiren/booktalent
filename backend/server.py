@@ -202,6 +202,15 @@ class UpdateProfileBody(BaseModel):
     available_for_booking: Optional[bool] = None
     stage_name: Optional[str] = None
     bank: Optional[Dict[str, str]] = None
+    # rich profile fields
+    awards: Optional[List[str]] = None
+    certifications: Optional[List[str]] = None
+    faqs: Optional[List[Dict[str, str]]] = None  # [{q, a}]
+    youtube_url: Optional[str] = None
+    instagram_url: Optional[str] = None
+    spotify_url: Optional[str] = None
+    onboarding_completed: Optional[bool] = None
+    onboarding_step: Optional[int] = None
     # customer specific
     company_name: Optional[str] = None
 
@@ -216,8 +225,12 @@ class PackageBody(BaseModel):
 
 
 class MediaUploadBody(BaseModel):
-    """Used for base64 image uploads via JSON for convenience."""
-    type: Literal["profile", "cover", "gallery", "video", "reel", "document", "kyc", "review"]
+    """Used for base64 uploads via JSON for convenience."""
+    type: Literal[
+        "profile", "cover", "gallery", "video", "reel",
+        "audio", "document", "press_kit", "brand_deck", "clip",
+        "kyc", "review",
+    ]
     data_url: str  # data:image/...;base64,XXX
     title: Optional[str] = None
     is_featured: bool = False
@@ -617,6 +630,52 @@ async def update_me(body: UpdateProfileBody, user: dict = Depends(get_current_us
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# ARTIST ONBOARDING
+# ─────────────────────────────────────────────────────────────────────────────
+class OnboardingStepBody(BaseModel):
+    step: int  # 1..5
+    completed: Optional[bool] = False
+
+
+@api.get("/onboarding/me")
+async def get_onboarding_status(user: dict = Depends(get_current_user)):
+    if user["role"] != "artist":
+        return {"required": False, "completed": True}
+    profile = await db.artist_profiles.find_one({"user_id": user["id"]}) or {}
+    media_count = await db.media.count_documents({"user_id": user["id"], "type": {"$in": ["profile", "cover", "gallery"]}})
+    pkg_count = await db.packages.count_documents({"artist_id": user["id"]})
+    avail_count = await db.availability.count_documents({"user_id": user["id"]})
+
+    checks = {
+        "step1_basic": bool(profile.get("stage_name") and profile.get("category") and profile.get("city")),
+        "step2_branding": bool(profile.get("bio") and (profile.get("languages") or [])),
+        "step3_media": media_count > 0,
+        "step4_packages": pkg_count > 0,
+        "step5_availability": avail_count > 0,
+    }
+    done = all(checks.values()) or profile.get("onboarding_completed", False)
+    next_step = next((i + 1 for i, k in enumerate(checks.keys()) if not checks[k]), 6)
+    return {
+        "required": True,
+        "completed": done,
+        "next_step": next_step,
+        "checks": checks,
+        "current_step": profile.get("onboarding_step", next_step),
+    }
+
+
+@api.post("/onboarding/complete")
+async def complete_onboarding(user: dict = Depends(get_current_user)):
+    if user["role"] != "artist":
+        raise HTTPException(403, "Artists only")
+    await db.artist_profiles.update_one(
+        {"user_id": user["id"]},
+        {"$set": {"onboarding_completed": True, "onboarding_completed_at": utcnow()}},
+    )
+    return {"ok": True}
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # MEDIA — base64 stored in GridFS-like collection
 # ─────────────────────────────────────────────────────────────────────────────
 @api.post("/media/upload")
@@ -624,11 +683,18 @@ async def media_upload(body: MediaUploadBody, user: dict = Depends(get_current_u
     # parse data url
     if not body.data_url.startswith("data:"):
         raise HTTPException(400, "Invalid data URL")
-    header, b64 = body.data_url.split(",", 1)
-    mime = header.split(";")[0].replace("data:", "") or "application/octet-stream"
-    raw = base64.b64decode(b64)
-    if len(raw) > 25 * 1024 * 1024:
-        raise HTTPException(400, "File too large (max 25MB)")
+    try:
+        header, b64 = body.data_url.split(",", 1)
+        mime = header.split(";")[0].replace("data:", "") or "application/octet-stream"
+        raw = base64.b64decode(b64)
+    except Exception as e:
+        raise HTTPException(400, f"Could not decode file: {e}")
+    # MongoDB BSON documents are limited to 16 MB. Base64 inside a single doc
+    # must therefore stay under ~12 MB binary (≈ 16 MB base64-encoded).
+    # For larger files, users should host externally and store the URL.
+    MAX_BINARY = 12 * 1024 * 1024
+    if len(raw) > MAX_BINARY:
+        raise HTTPException(413, f"File too large for local storage (max {MAX_BINARY // (1024*1024)} MB binary). Please use a smaller file or host externally.")
 
     mid = new_id()
     doc = {
@@ -905,7 +971,40 @@ async def create_booking(body: BookingCreate, user: dict = Depends(get_current_u
     # check availability
     av = await db.availability.find_one({"user_id": body.artist_id, "date": body.event_date})
     if av and av.get("status") in ("booked", "blocked"):
-        raise HTTPException(400, "Selected date is not available")
+        # Smart suggestion: find similar artists
+        prof = await db.artist_profiles.find_one({"user_id": body.artist_id}) or {}
+        suggestions = []
+        for q in [
+            {"user_id": {"$ne": body.artist_id}, "category": prof.get("category"), "city": prof.get("city")},
+            {"user_id": {"$ne": body.artist_id}, "category": prof.get("category")},
+            {"user_id": {"$ne": body.artist_id}, "city": prof.get("city")},
+        ]:
+            if len(suggestions) >= 3:
+                break
+            for s in await db.artist_profiles.find(q).sort("rating_avg", -1).limit(3).to_list(3):
+                if s["user_id"] not in [x["user_id"] for x in suggestions]:
+                    suggestions.append(s)
+                    if len(suggestions) >= 3:
+                        break
+        suggestion_data = [
+            {
+                "user_id": s["user_id"],
+                "stage_name": s["stage_name"],
+                "category": s.get("category"),
+                "city": s.get("city"),
+                "rating_avg": s.get("rating_avg", 0),
+                "emoji": s.get("emoji", "🎤"),
+            }
+            for s in suggestions
+        ]
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "message": "Selected date is not available",
+                "alternatives": suggestion_data,
+                "date": body.event_date,
+            },
+        )
 
     addon_total = sum(ADDON_PRICES.get(a, 0) for a in body.addons)
 
@@ -1012,6 +1111,26 @@ async def booking_action(bid: str, body: BookingStatusUpdate, user: dict = Depen
     if body.action == "accept" and (is_artist or is_admin) and doc["status"] in ("pending_artist", "pending_payment"):
         new_status = "confirmed"
         await _create_contract(doc)
+        # Auto-block the event date so no double-booking
+        await db.availability.update_one(
+            {"user_id": doc["artist_id"], "date": doc["event_date"]},
+            {"$set": {"id": new_id(), "user_id": doc["artist_id"], "date": doc["event_date"], "status": "booked", "booking_id": doc["id"]}},
+            upsert=True,
+        )
+        # Booking confirmation email to customer
+        try:
+            artist_p = await db.artist_profiles.find_one({"user_id": doc["artist_id"]}) or {}
+            artist_u = await db.users.find_one({"id": doc["artist_id"]}) or {}
+            artist_name = artist_p.get("stage_name") or f"{artist_u.get('first_name', '')} {artist_u.get('last_name', '')}".strip()
+            await send_booking_confirmation_email(
+                doc.get("customer_email") or "",
+                doc.get("customer_name") or "",
+                doc.get("ref", ""),
+                artist_name,
+                doc.get("event_date", ""),
+            )
+        except Exception as _e:
+            log.warning("Confirmation email failed: %s", _e)
     elif body.action == "reject" and (is_artist or is_admin) and doc["status"] in ("pending_artist", "pending_payment"):
         new_status = "rejected"
         # refund token if paid
@@ -1019,8 +1138,18 @@ async def booking_action(bid: str, body: BookingStatusUpdate, user: dict = Depen
             await _refund_to_wallet(doc["customer_id"], doc["amount_paid"], f"Refund for booking {doc['ref']}")
     elif body.action == "counter" and is_artist and body.counter_price:
         history_entry["counter_price"] = body.counter_price
-        # update pricing
         new_pricing = calc_booking_pricing(float(body.counter_price), doc["pricing"]["addons_total"], doc["pricing"]["coupon_discount"])
+        await db.bookings.update_one(
+            {"id": bid},
+            {"$set": {"pricing": new_pricing, "counter_offered_at": utcnow(), "counter_price": body.counter_price}},
+        )
+        # notify customer
+        await db.notifications.insert_one({
+            "id": new_id(), "user_id": doc["customer_id"], "type": "counter_offer",
+            "title": "Counter offer received",
+            "body": f"Artist proposed ₹{body.counter_price} for booking {doc['ref']}",
+            "read": False, "created_at": utcnow(), "link": f"/dashboard/bookings/{bid}",
+        })
         await db.bookings.update_one({"id": bid}, {"$set": {"pricing": new_pricing}})
     elif body.action == "start" and is_artist and doc["status"] == "confirmed":
         new_status = "started"
@@ -1878,6 +2007,85 @@ async def download_invoice_pdf(bid: str, user: dict = Depends(get_current_user))
         media_type="application/pdf",
         headers={"Content-Disposition": f'attachment; filename="{filename}"'},
     )
+
+
+# Counter-offer accept / reject by customer
+class CounterDecisionBody(BaseModel):
+    accept: bool
+
+
+@api.post("/bookings/{bid}/counter")
+async def counter_decision(bid: str, body: CounterDecisionBody, user: dict = Depends(get_current_user)):
+    doc = await db.bookings.find_one({"id": bid})
+    if not doc or doc["customer_id"] != user["id"]:
+        raise HTTPException(404, "Booking not found")
+    if not doc.get("counter_price"):
+        raise HTTPException(400, "No active counter-offer")
+    if body.accept:
+        await db.bookings.update_one(
+            {"id": bid},
+            {"$set": {"counter_accepted_at": utcnow()},
+             "$push": {"history": {"at": utcnow(), "action": "counter_accepted", "by": user["id"]}}},
+        )
+        await db.notifications.insert_one({
+            "id": new_id(), "user_id": doc["artist_id"], "type": "counter_accepted",
+            "title": "Counter offer accepted",
+            "body": f"Customer accepted ₹{doc['counter_price']} for {doc['ref']}",
+            "read": False, "created_at": utcnow(),
+        })
+    else:
+        # revert pricing to original
+        pkg = await db.packages.find_one({"id": doc["package_id"]})
+        if pkg:
+            addon_total = sum(ADDON_PRICES.get(a, 0) for a in doc.get("addons", []))
+            new_pricing = calc_booking_pricing(float(pkg["price"]), addon_total, doc["pricing"]["coupon_discount"])
+            await db.bookings.update_one({"id": bid}, {"$set": {"pricing": new_pricing, "counter_price": None}})
+    return {"ok": True}
+
+
+# Upload signed contract (artist or customer)
+class UploadSignedBody(BaseModel):
+    contract_id: str
+    data_url: str
+    signed_by: Literal["artist", "customer"]
+
+
+@api.post("/contracts/upload-signed")
+async def upload_signed_contract(body: UploadSignedBody, user: dict = Depends(get_current_user)):
+    contract = await db.contracts.find_one({"id": body.contract_id})
+    if not contract:
+        raise HTTPException(404, "Contract not found")
+    if user["id"] not in (contract["artist_id"], contract["customer_id"]) and user["role"] != "admin":
+        raise HTTPException(403, "Forbidden")
+    if not body.data_url.startswith("data:"):
+        raise HTTPException(400, "Invalid data URL")
+    header, b64 = body.data_url.split(",", 1)
+    mime = header.split(";")[0].replace("data:", "")
+    raw = base64.b64decode(b64)
+    if len(raw) > 25 * 1024 * 1024:
+        raise HTTPException(400, "File too large (max 25 MB)")
+    mid = new_id()
+    await db.media.insert_one({
+        "id": mid, "user_id": user["id"], "type": "document",
+        "mime": mime, "data": b64, "size": len(raw),
+        "title": f"signed_contract_{contract.get('ref')}_{body.signed_by}",
+        "contract_id": body.contract_id, "created_at": utcnow(),
+    })
+    # Add to contract's version history
+    sig_field = f"signed_{body.signed_by}_media_id"
+    await db.contracts.update_one(
+        {"id": body.contract_id},
+        {"$set": {sig_field: mid, f"signed_{body.signed_by}_at": utcnow()},
+         "$push": {"history": {"action": "uploaded_signed", "by": user["id"], "media_id": mid, "at": utcnow()}}},
+    )
+    # If both signed, flip to fully_signed
+    fresh = await db.contracts.find_one({"id": body.contract_id})
+    if fresh.get("signed_artist_media_id") and fresh.get("signed_customer_media_id"):
+        await db.contracts.update_one(
+            {"id": body.contract_id},
+            {"$set": {"status": "fully_signed", "fully_signed_at": utcnow()}},
+        )
+    return {"ok": True, "media_id": mid}
 
 
 # BOOST
