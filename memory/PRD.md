@@ -47,6 +47,29 @@ Build a production-ready BookTalent talent marketplace (Indian artist booking) w
 - **Premium HTML emails** — booking confirmation email + OTP email both branded
 - **Backend: 64/64 pytest passing** · Frontend E2E (customer booking + artist counter modal) verified via Playwright
 
+### Iteration 5 — Profile Picture / Cover Banner Upload Fix (current)
+**Root-cause of reported bug**: backend was correctly saving uploaded `profile_image` and `cover_image` IDs, but the **frontend never actually rendered them** — `ArtistProfile.jsx` only displayed the emoji placeholder. The "second-attempt success" was an illusion: every upload worked, the UI just refused to show it.
+- Public artist profile (`/artist/:id`) now renders the uploaded cover banner + circular profile picture
+- Landing + Search artist cards now use cover/profile image when available
+- ProfileEditor in artist dashboard got dedicated **Profile Picture** + **Cover Banner** widgets with click-to-upload, drag-and-drop, **upload-progress percentage**, instant UI refresh (no page reload), success toast
+- File input is **reset after upload** (`inputRef.current.value = ""`) so re-uploading the same file works on the first click
+- Backend automatically **deletes the previous orphan** when uploading a new profile/cover and updates `artist_profiles.updated_at` so frontend cache-busting URLs (`?v=updated_at`) work correctly
+- Drag-and-drop support added in Media Manager (`onDrop` / `onDragOver`)
+- Media Manager now accepts audio + PDFs and renders icons for them
+- Validated end-to-end via Playwright: priya logs in → Profile tab → uploads profile pic + cover → both render instantly with cache-busted URLs
+
+
+- **Artist Onboarding Wizard** — 5-step modal that auto-shows for new artists (`/onboarding/me` + `/onboarding/complete` endpoints)
+- **Booking confirmation email** auto-sent on artist accept (uses Resend; mock-logs when no key)
+- **Auto-block date** when booking is confirmed — `db.availability` upserted to `status='booked'` with the booking_id
+- **Smart alternative artists** — when customer tries to book a blocked date, API returns 400 with 3 alternative artists (same category+city → category-only → city-only fallback) + frontend modal
+- **Counter-offer flow** — artist counters with new price, customer can accept (locks in price) or reject (reverts), both with notifications
+- **Upload signed contract** — `/contracts/upload-signed` for artist/customer; contract flips to `fully_signed` when both upload
+- **Expanded media types** — `audio, document, press_kit, brand_deck, clip` accepted; 12 MB binary cap (BSON limit)
+- **Rich profile fields** — `awards, certifications, faqs, youtube_url, instagram_url, spotify_url, onboarding_step`
+- **Premium HTML emails** — booking confirmation email + OTP email both branded
+- **Backend: 64/64 pytest passing** · Frontend E2E (customer booking + artist counter modal) verified via Playwright
+
 ## Switching to live integrations (no code change)
 Add to `/app/backend/.env`, then `sudo supervisorctl restart backend`:
 ```env

@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from "react";
 import { Link, useNavigate, useParams } from "react-router-dom";
 import Nav from "../components/Nav";
-import api, { fmtINRFull } from "../lib/api";
+import api, { fmtINRFull, mediaUrl } from "../lib/api";
 import { useAuth } from "../lib/auth";
 
 export default function ArtistProfile() {
@@ -48,15 +48,30 @@ export default function ArtistProfile() {
 
         <div style={{
           height: 280, borderRadius: 18,
-          background: "linear-gradient(135deg, #1A0B3B, #6D28D9)",
-          display: "grid", placeItems: "center", fontSize: 100, position: "relative", overflow: "hidden",
-        }}>
-          {profile.emoji || "🎤"}
-          <div style={{ position: "absolute", inset: 0, background: "linear-gradient(180deg, transparent 40%, rgba(9,9,18,0.8))" }} />
+          background: profile.cover_image
+            ? `linear-gradient(180deg, rgba(9,9,18,0.2), rgba(9,9,18,0.7)), url(${mediaUrl(profile.cover_image)}?v=${profile.updated_at || ""}) center/cover`
+            : "linear-gradient(135deg, #1A0B3B, #6D28D9)",
+          display: "grid", placeItems: "center",
+          fontSize: profile.cover_image ? 0 : 100,
+          position: "relative", overflow: "hidden",
+        }} data-testid="profile-cover-banner">
+          {!profile.cover_image && (profile.emoji || "🎤")}
+          <div style={{ position: "absolute", inset: 0, background: profile.cover_image ? "transparent" : "linear-gradient(180deg, transparent 40%, rgba(9,9,18,0.8))" }} />
         </div>
 
         <div style={{ display: "flex", alignItems: "end", gap: 24, padding: "0 24px", marginTop: -50, marginBottom: 24, position: "relative" }}>
-          <div className="avatar avatar-xl" style={{ background: "linear-gradient(135deg, var(--purple), var(--gold))" }}>{profile.emoji || "🎤"}</div>
+          <div
+            className="avatar avatar-xl"
+            style={{
+              background: profile.profile_image
+                ? `url(${mediaUrl(profile.profile_image)}?v=${profile.updated_at || ""}) center/cover`
+                : "linear-gradient(135deg, var(--purple), var(--gold))",
+              fontSize: profile.profile_image ? 0 : undefined,
+            }}
+            data-testid="profile-avatar"
+          >
+            {!profile.profile_image && (profile.emoji || "🎤")}
+          </div>
           <div style={{ flex: 1, paddingBottom: 8 }}>
             <h1 className="font-serif" style={{ fontSize: 38, fontWeight: 700, marginBottom: 8 }} data-testid="artist-name">{profile.stage_name}</h1>
             <div className="flex gap-8 items-center" style={{ flexWrap: "wrap" }}>

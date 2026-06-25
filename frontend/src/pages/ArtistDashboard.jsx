@@ -200,23 +200,67 @@ function ProfileEditor({ user, refreshMe, toast }) {
     awards: "", certifications: "", youtube_url: "", instagram_url: "", spotify_url: "",
   });
   const [loaded, setLoaded] = useState(false);
-  useEffect(() => {
-    api.get("/auth/me").then((r) => {
-      const p = r.data.artist_profile || {};
-      setForm({
-        bio: p.bio || "", tagline: p.tagline || "", city: p.city || "",
-        languages: (p.languages || []).join(", "),
-        genres: (p.genres || []).join(", "),
-        event_types: (p.event_types || []).join(", "),
-        awards: (p.awards || []).join("\n"),
-        certifications: (p.certifications || []).join("\n"),
-        youtube_url: p.youtube_url || "",
-        instagram_url: p.instagram_url || "",
-        spotify_url: p.spotify_url || "",
-      });
-      setLoaded(true);
+  const [profile, setProfile] = useState({});
+  const [uploading, setUploading] = useState({ profile: false, cover: false });
+  const [progress, setProgress] = useState({ profile: 0, cover: 0 });
+  const profileRef = useRef();
+  const coverRef = useRef();
+  const [cacheBust, setCacheBust] = useState(Date.now());
+
+  const reload = async () => {
+    const r = await api.get("/auth/me");
+    const p = r.data.artist_profile || {};
+    setProfile(p);
+    setForm({
+      bio: p.bio || "", tagline: p.tagline || "", city: p.city || "",
+      languages: (p.languages || []).join(", "),
+      genres: (p.genres || []).join(", "),
+      event_types: (p.event_types || []).join(", "),
+      awards: (p.awards || []).join("\n"),
+      certifications: (p.certifications || []).join("\n"),
+      youtube_url: p.youtube_url || "",
+      instagram_url: p.instagram_url || "",
+      spotify_url: p.spotify_url || "",
     });
-  }, []);
+    setCacheBust(Date.now());
+    setLoaded(true);
+  };
+
+  useEffect(() => { reload(); }, []);
+
+  const uploadImage = async (file, type) => {
+    if (!file) return;
+    if (!file.type.startsWith("image/")) { toast("Please pick an image", "error"); return; }
+    if (file.size > 12 * 1024 * 1024) { toast("Image too large (max 12 MB)", "error"); return; }
+    setUploading((u) => ({ ...u, [type]: true }));
+    setProgress((p) => ({ ...p, [type]: 0 }));
+    try {
+      const dataUrl = await new Promise((res, rej) => {
+        const r = new FileReader();
+        r.onload = () => res(r.result); r.onerror = rej;
+        r.readAsDataURL(file);
+      });
+      // Delete previous image of this type to avoid orphans
+      try {
+        const existing = profile[type === "profile" ? "profile_image" : "cover_image"];
+        if (existing) await api.delete(`/media/${existing}`).catch(() => {});
+      } catch (_) {}
+      await api.post("/media/upload", { type, data_url: dataUrl, title: `${type}-${file.name}` }, {
+        onUploadProgress: (e) => {
+          if (e.total) setProgress((p) => ({ ...p, [type]: Math.round((e.loaded / e.total) * 100) }));
+        },
+      });
+      toast(`${type === "profile" ? "Profile picture" : "Cover banner"} updated`);
+      await reload();
+      refreshMe();
+    } catch (e) { toast(formatApiError(e), "error"); }
+    setUploading((u) => ({ ...u, [type]: false }));
+    setProgress((p) => ({ ...p, [type]: 0 }));
+    // reset the input so the same file can be reselected
+    if (type === "profile" && profileRef.current) profileRef.current.value = "";
+    if (type === "cover" && coverRef.current) coverRef.current.value = "";
+  };
+
   const save = async () => {
     try {
       await api.put("/users/me", {
@@ -234,10 +278,83 @@ function ProfileEditor({ user, refreshMe, toast }) {
       refreshMe();
     } catch (e) { toast(formatApiError(e), "error"); }
   };
+
   if (!loaded) return <div className="loading"><div className="spinner" /></div>;
+
   return (
     <div className="card card-pad" data-testid="profile-editor">
       <h2 className="font-serif fs-20 fw-700 mb-16">Artist Profile</h2>
+
+      {/* Cover Banner */}
+      <div className="field">
+        <div className="field-label">Cover Banner</div>
+        <div
+          onClick={() => coverRef.current?.click()}
+          style={{
+            height: 160, borderRadius: 12, cursor: "pointer", position: "relative",
+            border: "2px dashed var(--glass-border)",
+            background: profile.cover_image
+              ? `linear-gradient(180deg, rgba(0,0,0,0.2), rgba(0,0,0,0.5)), url(${mediaUrl(profile.cover_image)}?v=${cacheBust}) center/cover`
+              : "linear-gradient(135deg, var(--bg3), var(--purple))",
+            display: "grid", placeItems: "center",
+          }}
+          data-testid="cover-upload-zone"
+        >
+          <input ref={coverRef} type="file" accept="image/*" style={{ display: "none" }}
+                 onChange={(e) => uploadImage(e.target.files[0], "cover")} />
+          {uploading.cover ? (
+            <div className="text-center">
+              <div className="spinner" style={{ margin: "0 auto 8px" }} />
+              <div className="fs-12 fw-600">Uploading… {progress.cover}%</div>
+            </div>
+          ) : (
+            <div className="text-center">
+              <div className="fs-22 mb-4">🖼️</div>
+              <div className="fs-13 fw-600">{profile.cover_image ? "Click to replace" : "Click to upload cover banner"}</div>
+              <div className="fs-11 text-muted mt-4">Recommended 1600 × 480 · Max 12 MB</div>
+            </div>
+          )}
+        </div>
+      </div>
+
+      {/* Profile Picture */}
+      <div className="field">
+        <div className="field-label">Profile Picture</div>
+        <div className="flex items-center gap-16">
+          <div
+            onClick={() => profileRef.current?.click()}
+            className="avatar avatar-lg"
+            style={{
+              cursor: "pointer", position: "relative",
+              width: 96, height: 96,
+              background: profile.profile_image
+                ? `url(${mediaUrl(profile.profile_image)}?v=${cacheBust}) center/cover`
+                : "linear-gradient(135deg, var(--purple), var(--gold))",
+              fontSize: profile.profile_image ? 0 : 36,
+              border: "2px solid var(--gold-border)",
+            }}
+            data-testid="profile-upload-zone"
+          >
+            <input ref={profileRef} type="file" accept="image/*" style={{ display: "none" }}
+                   onChange={(e) => uploadImage(e.target.files[0], "profile")} />
+            {!profile.profile_image && (profile.emoji || "🎤")}
+            {uploading.profile && (
+              <div style={{ position: "absolute", inset: 0, background: "rgba(0,0,0,0.7)", display: "grid", placeItems: "center", borderRadius: "50%" }}>
+                <div className="fs-11 fw-700 text-gold">{progress.profile}%</div>
+              </div>
+            )}
+          </div>
+          <div>
+            <button className="btn btn-ghost btn-sm" onClick={() => profileRef.current?.click()} disabled={uploading.profile} data-testid="pick-profile-btn">
+              {uploading.profile ? "Uploading…" : profile.profile_image ? "Change Photo" : "Upload Photo"}
+            </button>
+            <div className="text-muted fs-11 mt-4">Square format · Max 12 MB</div>
+          </div>
+        </div>
+      </div>
+
+      <div className="divider" />
+
       <div className="field">
         <div className="field-label">Tagline</div>
         <input className="field-input" value={form.tagline} onChange={(e) => setForm({ ...form, tagline: e.target.value })} data-testid="prof-tagline" />
@@ -374,29 +491,48 @@ function PackageModal({ pkg, onSave, onClose }) {
 function MediaManager({ data, refresh, toast }) {
   const inputRef = useRef();
   const [busy, setBusy] = useState(false);
+  const [progress, setProgress] = useState(0);
 
   const upload = async (files, type) => {
+    if (!files || files.length === 0) return;
     setBusy(true);
+    setProgress(0);
+    const list = Array.from(files);
     try {
-      for (const f of files) {
+      for (let i = 0; i < list.length; i++) {
+        const f = list[i];
         if (f.size > 12 * 1024 * 1024) { toast(`${f.name} too large (max 12MB)`, "error"); continue; }
         const dataUrl = await new Promise((res) => {
           const r = new FileReader();
           r.onload = () => res(r.result);
           r.readAsDataURL(f);
         });
-        await api.post("/media/upload", { type, data_url: dataUrl, title: f.name });
+        await api.post("/media/upload", { type, data_url: dataUrl, title: f.name }, {
+          onUploadProgress: (e) => {
+            const fileProg = e.total ? (e.loaded / e.total) : 0;
+            setProgress(Math.round(((i + fileProg) / list.length) * 100));
+          },
+        });
       }
-      toast("Uploaded!");
-      refresh();
+      toast(`Uploaded ${list.length} file${list.length > 1 ? "s" : ""}`);
+      await refresh();
     } catch (e) { toast(formatApiError(e), "error"); }
     setBusy(false);
+    setProgress(0);
+    // CRITICAL: reset input value so the SAME file can be picked again
+    if (inputRef.current) inputRef.current.value = "";
   };
 
   const del = async (id) => {
     if (!window.confirm("Delete this media?")) return;
     await api.delete(`/media/${id}`);
-    refresh();
+    await refresh();
+    toast("Deleted");
+  };
+
+  const onDrop = (e) => {
+    e.preventDefault();
+    if (e.dataTransfer.files) upload(e.dataTransfer.files, "gallery");
   };
 
   return (
@@ -404,24 +540,43 @@ function MediaManager({ data, refresh, toast }) {
       <div className="flex justify-between mb-16">
         <h2 className="font-serif fs-20 fw-700">Media Manager</h2>
       </div>
-      <div className="upload-zone mb-20" data-testid="upload-zone">
-        <input ref={inputRef} type="file" multiple accept="image/*,video/*" onChange={(e) => upload(e.target.files, "gallery")} />
+      <div
+        className="upload-zone mb-20"
+        data-testid="upload-zone"
+        onDrop={onDrop}
+        onDragOver={(e) => e.preventDefault()}
+        onClick={() => inputRef.current?.click()}
+      >
+        <input
+          ref={inputRef} type="file" multiple
+          accept="image/*,video/*,audio/*,application/pdf"
+          onChange={(e) => upload(e.target.files, "gallery")}
+          style={{ display: "none" }}
+        />
         <div className="upload-zone-icon">📁</div>
-        <div className="fs-14 fw-600 mb-4">Drop files here or click to browse</div>
-        <div className="text-muted fs-12">Images & videos up to 12MB each (local storage)</div>
-        {busy && <div className="spinner mt-12" style={{ margin: "12px auto 0" }} />}
+        <div className="fs-14 fw-600 mb-4">{busy ? `Uploading… ${progress}%` : "Drop files here or click to browse"}</div>
+        <div className="text-muted fs-12">Images, videos, audio, PDFs · Up to 12MB each</div>
+        {busy && (
+          <div style={{ width: "60%", margin: "12px auto 0", height: 6, background: "var(--glass)", borderRadius: 3, overflow: "hidden" }}>
+            <div style={{ width: `${progress}%`, height: "100%", background: "linear-gradient(90deg, var(--gold), var(--purple))", transition: "width 0.2s" }} />
+          </div>
+        )}
       </div>
       <div className="media-grid">
-        {data.media.filter((m) => m.type !== "kyc").map((m) => (
+        {data.media.filter((m) => !["kyc", "profile", "cover"].includes(m.type)).map((m) => (
           <div key={m.id} className="media-tile" data-testid={`media-tile-${m.id}`}>
             {m.mime?.startsWith("video/") ? (
               <video src={mediaUrl(m.id)} muted />
+            ) : m.mime?.startsWith("audio/") ? (
+              <div style={{ display: "grid", placeItems: "center", height: "100%", fontSize: 48 }}>🎵</div>
+            ) : m.mime === "application/pdf" ? (
+              <div style={{ display: "grid", placeItems: "center", height: "100%", fontSize: 48 }}>📄</div>
             ) : (
               <img src={mediaUrl(m.id)} alt={m.title || ""} />
             )}
             <div className="media-tile-overlay">
               <span className="text-muted fs-11">{(m.size / 1024).toFixed(0)} KB</span>
-              <button className="btn btn-red btn-xs" onClick={() => del(m.id)} data-testid={`del-media-${m.id}`}>Delete</button>
+              <button className="btn btn-red btn-xs" onClick={(e) => { e.stopPropagation(); del(m.id); }} data-testid={`del-media-${m.id}`}>Delete</button>
             </div>
           </div>
         ))}

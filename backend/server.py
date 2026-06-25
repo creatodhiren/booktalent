@@ -711,10 +711,18 @@ async def media_upload(body: MediaUploadBody, user: dict = Depends(get_current_u
     }
     await db.media.insert_one(doc)
 
-    # Convenience: if profile/cover, set on artist profile
+    # Convenience: if profile/cover, set on artist profile and remove the previous one
     if user["role"] == "artist" and body.type in ("profile", "cover"):
         key = "profile_image" if body.type == "profile" else "cover_image"
-        await db.artist_profiles.update_one({"user_id": user["id"]}, {"$set": {key: mid}})
+        existing = await db.artist_profiles.find_one({"user_id": user["id"]})
+        old_id = (existing or {}).get(key)
+        if old_id and old_id != mid:
+            # remove orphan
+            await db.media.delete_one({"id": old_id})
+        await db.artist_profiles.update_one(
+            {"user_id": user["id"]},
+            {"$set": {key: mid, "updated_at": utcnow()}},
+        )
 
     doc.pop("data", None)
     doc.pop("_id", None)
