@@ -33,7 +33,32 @@ Example: Artist Fee ₹25,000 → Platform Fee ₹1,250 + GST ₹225 = ₹1,475 
 - `iter9_routes.py` (Agency, Corporate, Chat upload, Provider tests)
 - `chat_routes.py` (WebSocket + REST chat)
 
-## Iter 12 — Payment-Gated Chat (this round)
+## Iter 13 — server.py Modularisation (this round)
+Pure structural refactor — no business logic touched.
+
+`/app/backend/server.py` shrunk from 2,868 → 2,378 lines by extracting 6 domain
+routers under `/app/backend/routes/` using the existing factory pattern
+(`make_router(**deps) -> APIRouter`). Helpers that are still shared with the
+core (`_validate_coupon`, `_refund_to_wallet`, `_release_payment_to_artist`,
+`notify_dispatch`, `log`, `utcnow`, `new_id`, `clean`) are injected as kwargs.
+
+Domains extracted:
+- `routes/wallet.py` — GET /wallet, GET /wallet/transactions, POST /wallet/withdraw
+- `routes/reviews.py` — POST /reviews, /admin/reviews (+moderate), public list,
+  reply, report
+- `routes/coupons.py` — admin CRUD + redemption ledger + analytics + validate
+- `routes/blogs.py` — POST /admin/blogs, GET /blogs, GET /blogs/{slug}
+- `routes/disputes.py` — POST /disputes, /admin/disputes, /resolve
+- `routes/kyc.py` — submit, mine, /admin/kyc, /admin/kyc/decide (incl. local
+  KYC_ALLOWED_MIMES + 5 MB cap)
+
+Test: `test_iter13.py` — **40/40 pytest cases pass** covering all 6 moved
+routers + core untouched + Iter 11/12 sanity. No frontend changes.
+
+Remaining candidates for future extraction: bookings, payments, contracts,
+notifications/messages, admin (artists / boost / withdrawals).
+
+## Iter 12 — Payment-Gated Chat
 Business rule: the Customer ↔ Artist chat is **locked until the Platform Service Fee
 (5% + 18% GST) is paid**. No exceptions for either side — only admins bypass for moderation.
 
